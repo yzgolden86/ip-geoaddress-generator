@@ -3,13 +3,13 @@
 import { DataList, Text, Skeleton, IconButton, Flex } from "@radix-ui/themes";
 import { User } from "../types";
 import { CopyStatus } from "./CopyStatus";
-import { ExternalLinkIcon } from "@radix-ui/react-icons";
 
 interface UserInfoProps {
   user: User | null;
   loading: boolean;
   copiedId: string;
   onCopy: (text: string, id: string) => void;
+  email: string;
 }
 
 export function UserInfo({
@@ -17,6 +17,7 @@ export function UserInfo({
   loading,
   copiedId,
   onCopy,
+  email,
 }: Readonly<UserInfoProps>) {
   if (loading) {
     return (
@@ -164,29 +165,19 @@ export function UserInfo({
           <Text size="2">邮箱</Text>
         </DataList.Label>
         <DataList.Value>
-          <Flex align="center" gap="3">
-            <IconButton
-              size="3"
-              aria-label="复制"
-              color="gray"
-              variant="ghost"
-              className="group"
-              onClick={() => onCopy("123@mail.com", "email")}
-            >
-              <Flex align="center" gap="2">
-                <Text highContrast>123@mail.com</Text>
-                <CopyStatus isCopied={copiedId === "email"} />
-              </Flex>
-            </IconButton>
-            <IconButton
-              size="1"
-              variant="soft"
-              color="gray"
-              onClick={() => window.open("mailto:123@mail.com")}
-            >
-              <ExternalLinkIcon width="16" height="16" />
-            </IconButton>
-          </Flex>
+          <IconButton
+            size="3"
+            aria-label="复制"
+            color="gray"
+            variant="ghost"
+            className="group"
+            onClick={() => onCopy(email, "email")}
+          >
+            <Flex align="center" gap="2">
+              <Text highContrast>{email}</Text>
+              <CopyStatus isCopied={copiedId === "email"} />
+            </Flex>
+          </IconButton>
         </DataList.Value>
       </DataList.Item>
     </DataList.Root>

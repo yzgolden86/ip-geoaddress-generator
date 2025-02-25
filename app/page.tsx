@@ -2,7 +2,13 @@
 
 import { useState, useEffect, useContext, useCallback } from "react";
 import { WFDService } from "./services/addressService";
-import type { User, Address, HistoryRecord } from "./types";
+import type {
+  User,
+  Address,
+  HistoryRecord,
+  TempMailMessage,
+  MailEvent,
+} from "./types";
 import {
   Card,
   Text,
@@ -16,21 +22,22 @@ import {
   Button,
   Skeleton,
   SegmentedControl,
-  ScrollArea,
-  Badge,
 } from "@radix-ui/themes";
 import {
   MoonIcon,
   SunIcon,
   ReloadIcon,
   GitHubLogoIcon,
-  TrashIcon,
-  DownloadIcon,
+  EnvelopeClosedIcon,
 } from "@radix-ui/react-icons";
 import { ThemeContext } from "./theme-provider";
 import { UserInfo } from "./components/UserInfo";
 import { AddressInfo } from "./components/AddressInfo";
 import { AddressSelector } from "./components/AddressSelector";
+import { InboxDialog } from "./components/InboxDialog";
+import { HistoryList } from "./components/HistoryList";
+import Mailjs from "@cemalgnlts/mailjs";
+import { Toast } from "./components/Toast";
 
 const generateId = () =>
   `history-${Date.now()}-${Math.random().toString(36).substring(2)}`;
@@ -165,7 +172,7 @@ export default function Home() {
   const {
     ip,
     setIp,
-    loading,
+    loading: addressLoading,
     error,
     setError,
     user,
@@ -173,8 +180,21 @@ export default function Home() {
     setAddress,
     generateAddressData,
     setUser,
-    setLoading,
+    setLoading: setAddressLoading,
   } = useAddressData();
+  const [tempEmail, setTempEmail] = useState<string>("");
+  const [emailLoading, setEmailLoading] = useState(true);
+  const [messages, setMessages] = useState<TempMailMessage[]>([]);
+  const [mailjs] = useState(new Mailjs());
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const [selectedMessage, setSelectedMessage] =
+    useState<TempMailMessage | null>(null);
+  const [toastMessage, setToastMessage] = useState<TempMailMessage | null>(
+    null
+  );
+
+  // 计算总的加载状态
+  const loading = addressLoading || emailLoading;
 
   // 从 localStorage 加载历史记录
   useEffect(() => {
@@ -232,12 +252,53 @@ export default function Home() {
     localStorage.setItem("addressHistory", JSON.stringify(history));
   }, [history]);
 
+  useEffect(() => {
+    const createTempEmail = async () => {
+      setEmailLoading(true);
+      try {
+        const account = await mailjs.createOneAccount();
+        if (account.status) {
+          setTempEmail(account.data.username);
+          await mailjs.login(account.data.username, account.data.password);
+          mailjs.on("arrive", async (message: MailEvent) => {
+            const fullMessage = await mailjs.getMessage(message.id);
+            if (fullMessage.status) {
+              const source = await mailjs.getSource(message.id);
+              const messageData = {
+                ...fullMessage.data,
+                source: {
+                  id: source.data.id,
+                  data: source.data.data,
+                  downloadUrl: source.data.downloadUrl,
+                },
+              } as TempMailMessage;
+              setMessages((prev) => [...prev, messageData]);
+              setToastMessage(messageData);
+            }
+          });
+        }
+      } catch (error) {
+        console.error("创建临时邮箱失败:", error);
+      } finally {
+        setEmailLoading(false);
+      }
+    };
+
+    if (!tempEmail) {
+      createTempEmail();
+    }
+
+    return () => {
+      mailjs.off();
+    };
+  }, []);
+
   const toggleTheme = () => {
     setTheme(theme === "light" ? "dark" : "light");
   };
 
   const handleGenerateAddress = async () => {
-    setLoading(true);
+    setAddressLoading(true);
     try {
       if (inputMode === "address") {
         if (!inputIp) {
@@ -293,20 +354,12 @@ export default function Home() {
         setSelectedHistory(newRecord.id);
       }
     } finally {
-      setLoading(false);
+      setAddressLoading(false);
     }
   };
 
   const handleCopy = (text: string, id: string) => {
     copyToClipboard(text, setCopiedId, id);
-  };
-
-  const handleDeleteHistory = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation(); // 防止触发选中事件
-    setHistory((prev) => prev.filter((record) => record.id !== id));
-    if (selectedHistory === id) {
-      setSelectedHistory("");
-    }
   };
 
   const handleDeleteAllHistory = () => {
@@ -379,6 +432,38 @@ export default function Home() {
     backgroundSize: "30px 30px",
   };
 
+  const handleMessageClick = async (msg: TempMailMessage) => {
+    if (!msg.source) {
+      try {
+        const fullMessage = await mailjs.getMessage(msg.id);
+        if (fullMessage.status) {
+          const source = await mailjs.getSource(msg.id);
+          const messageData = {
+            ...fullMessage.data,
+            source: {
+              id: source.data.id,
+              data: source.data.data,
+              downloadUrl: source.data.downloadUrl,
+            },
+          } as TempMailMessage;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === msg.id ? messageData : m))
+          );
+          setSelectedMessage(messageData);
+        }
+      } catch (error) {
+        console.error("获取邮件内容失败:", error);
+      }
+    } else {
+      setSelectedMessage(msg);
+    }
+  };
+
+  const handleToastClick = (message: TempMailMessage) => {
+    setInboxOpen(true);
+    setSelectedMessage(message);
+  };
+
   return (
     <Box>
       {/* 导航栏 */}
@@ -399,6 +484,14 @@ export default function Home() {
           <IconButton
             size="4"
             variant="ghost"
+            aria-label="收信箱"
+            onClick={() => setInboxOpen(true)}
+          >
+            <EnvelopeClosedIcon width="24" height="24" />
+          </IconButton>
+          <IconButton
+            size="4"
+            variant="ghost"
             aria-label="GitHub"
             onClick={() =>
               window.open(
@@ -406,14 +499,7 @@ export default function Home() {
                 "_blank"
               )
             }
-            className="group flex items-center gap-2"
           >
-            <Text
-              className="opacity-0 transition-opacity duration-300 group-hover:opacity-100 text-sm"
-              highContrast
-            >
-              喜欢的话点个⭐吧~
-            </Text>
             <GitHubLogoIcon width="24" height="24" />
           </IconButton>
           <IconButton
@@ -512,117 +598,21 @@ export default function Home() {
                 </Flex>
               </Box>
               <Separator size="4" />
-              <Box style={{ flex: 1, minHeight: 0, position: "relative" }}>
-                <Flex
-                  direction="column"
-                  style={{ position: "absolute", inset: 0 }}
-                >
-                  <Text size="2" mb="2" color="gray">
-                    历史记录
-                  </Text>
-                  <ScrollArea
-                    type="hover"
-                    scrollbars="vertical"
-                    style={{ flex: 1 }}
-                  >
-                    <Flex direction="column" gap="2" pr="3">
-                      {history.length === 0 ? (
-                        <Box
-                          style={{
-                            minHeight: "100px",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                          }}
-                        >
-                          <Text size="2" color="gray" align="center">
-                            当前没有任何生成的信息
-                          </Text>
-                        </Box>
-                      ) : (
-                        history.map((record) => (
-                          <Box
-                            key={record.id}
-                            style={{
-                              padding: "8px 12px",
-                              borderRadius: "6px",
-                              cursor: "pointer",
-                              transition: "background-color 0.2s",
-                              backgroundColor:
-                                selectedHistory === record.id
-                                  ? "var(--gray-a6)"
-                                  : undefined,
-                            }}
-                            className="hover:bg-[var(--gray-a4)]"
-                            onClick={() => handleHistoryClick(record)}
-                          >
-                            <Flex align="center" justify="between" gap="3">
-                              <Flex
-                                align="center"
-                                gap="2"
-                                style={{ flex: 1, minWidth: 0 }}
-                              >
-                                <Text
-                                  size="2"
-                                  style={{
-                                    flex: 1,
-                                    minWidth: 0,
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
-                                    whiteSpace: "nowrap",
-                                  }}
-                                >
-                                  {record.user.name.last}{" "}
-                                  {record.user.name.first}
-                                </Text>
-                                <Badge size="1" variant="soft" color="gray">
-                                  {new Date(
-                                    record.timestamp
-                                  ).toLocaleDateString()}
-                                </Badge>
-                              </Flex>
-                              <IconButton
-                                size="1"
-                                color="red"
-                                variant="ghost"
-                                onClick={(e) =>
-                                  handleDeleteHistory(record.id, e)
-                                }
-                              >
-                                <TrashIcon />
-                              </IconButton>
-                            </Flex>
-                          </Box>
-                        ))
-                      )}
-                    </Flex>
-                  </ScrollArea>
-                  {history.length > 0 && (
-                    <>
-                      <Separator size="4" my="3" />
-                      <Flex justify="between" gap="3">
-                        <Button
-                          size="2"
-                          variant="soft"
-                          onClick={handleExportJSON}
-                        >
-                          <Text>导出JSON</Text>
-                          <DownloadIcon />
-                        </Button>
-                        <Button
-                          size="2"
-                          color="red"
-                          variant="soft"
-                          onClick={handleDeleteAllHistory}
-                        >
-                          <Text>删除全部</Text>
-                          <TrashIcon />
-                        </Button>
-                      </Flex>
-                    </>
-                  )}
-                </Flex>
-              </Box>
+              <HistoryList
+                history={history}
+                selectedHistory={selectedHistory}
+                onHistoryClick={handleHistoryClick}
+                onDeleteHistory={(id) => {
+                  setHistory((prev) =>
+                    prev.filter((record) => record.id !== id)
+                  );
+                  if (selectedHistory === id) {
+                    setSelectedHistory("");
+                  }
+                }}
+                onDeleteAllHistory={handleDeleteAllHistory}
+                onExportJSON={handleExportJSON}
+              />
             </Flex>
           </Card>
 
@@ -637,6 +627,7 @@ export default function Home() {
                     loading={loading}
                     copiedId={copiedId}
                     onCopy={handleCopy}
+                    email={tempEmail}
                   />
                   <Separator size="4" />
                   <AddressInfo
@@ -650,6 +641,21 @@ export default function Home() {
             </Flex>
           </Card>
         </Flex>
+        <InboxDialog
+          open={inboxOpen}
+          onOpenChange={setInboxOpen}
+          email={tempEmail}
+          messages={messages}
+          onMessageClick={handleMessageClick}
+          selectedMessage={selectedMessage}
+        />
+        {toastMessage && (
+          <Toast
+            message={toastMessage}
+            onClose={() => setToastMessage(null)}
+            onClick={() => handleToastClick(toastMessage)}
+          />
+        )}
       </Flex>
     </Box>
   );
